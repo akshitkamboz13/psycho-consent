@@ -3,6 +3,7 @@
 
 const express = require('express');
 const path    = require('path');
+const fs      = require('fs');
 const cors    = require('cors');
 const PDFDoc  = require('pdfkit');
 
@@ -11,7 +12,8 @@ const PORT = 3333;
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));                 // accept base64 signatures
-app.use(express.static(path.join(__dirname)));             // serve index.html / styles.css / app.js
+app.use(express.static(path.join(__dirname, 'public')));    // serve static assets from public/
+app.use(express.static(path.join(__dirname)));             // fallback to root if needed
 
 /* ────────────────────────────────────────────────
    POST /generate-pdf
@@ -336,6 +338,19 @@ app.post(['/generate-both-pdf', '/api/generate-both-pdf'], (req, res) => {
   renderReferenceSafetyPlan(doc, a);
 
   doc.end();
+});
+
+// Serve frontend fallback for any non-API GET request
+app.use((req, res, next) => {
+  if (req.method !== 'GET') return next();
+  if (req.path.startsWith('/generate') || req.path.startsWith('/api')) {
+    return next();
+  }
+  const pubPath = path.join(__dirname, 'public', 'index.html');
+  const rootPath = path.join(__dirname, 'index.html');
+  if (fs.existsSync(pubPath)) return res.sendFile(pubPath);
+  if (fs.existsSync(rootPath)) return res.sendFile(rootPath);
+  next();
 });
 
 function renderReferenceSafetyPlan(doc, a) {
