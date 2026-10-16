@@ -421,6 +421,9 @@ function embedSignature(doc, dataUrl, x, y) {
 
 // ── Export & Start ─────────────────────────────
 module.exports = app;
+module.exports.renderReferenceConsentForm = renderReferenceConsentForm;
+module.exports.renderReferenceSafetyPlan = renderReferenceSafetyPlan;
+module.exports.embedSignature = embedSignature;
 
 if (require.main === module) {
   app.listen(PORT, () => {

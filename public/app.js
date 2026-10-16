@@ -950,16 +950,28 @@ function shake(el) {
 }
 
 /* ══════════════════════════════════════════
-   WHATSAPP SHARE
+   WHATSAPP SHARE & PDF HELPERS
 ══════════════════════════════════════════ */
 async function fetchPdfBlob(endpoint) {
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ answers })
-  });
-  if (!response.ok) throw new Error(`PDF request failed: ${response.status}`);
-  return response.blob();
+  const candidates = [
+    endpoint.startsWith('/api') ? endpoint : `/api${endpoint}`,
+    endpoint
+  ];
+  let lastErr;
+  for (const ep of candidates) {
+    try {
+      const response = await fetch(ep, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answers })
+      });
+      if (response.ok) return await response.blob();
+      lastErr = new Error(`PDF request to ${ep} failed with status: ${response.status}`);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error('PDF request failed');
 }
 
 function saveBlob(blob, filename) {
@@ -970,7 +982,7 @@ function saveBlob(blob, filename) {
   document.body.appendChild(link);
   link.click();
   link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 async function downloadBothPDFs() {
@@ -1021,13 +1033,23 @@ async function shareBothPDFs() {
 
 async function previewBothPDFs() {
   const win = window.open('about:blank', '_blank');
+  if (win) {
+    try {
+      win.document.write('<p style="font-family:sans-serif;padding:32px;color:#555;">Preparing PDF preview...</p>');
+    } catch (e) {}
+  }
   try {
     const blob = await fetchPdfBlob('/generate-both-pdf');
     const url = URL.createObjectURL(blob);
-    if (win) {
+    if (win && !win.closed) {
       win.location.href = url;
     } else {
-      window.open(url, '_blank');
+      const link = document.createElement('a');
+      link.href = url;
+      link.target = '_blank';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
     }
     setTimeout(() => URL.revokeObjectURL(url), 120000);
   } catch (err) {
@@ -1041,31 +1063,12 @@ async function previewBothPDFs() {
    PDF GENERATION
 ══════════════════════════════════════════ */
 async function generateConsentPDF() {
-  // Prefer the server-side PDF generator.  It does not depend on the current
-  // slide being visible and avoids html2canvas producing a blank canvas for an
-  // off-screen/hidden render target.
   try {
-    const response = await fetch('/generate-pdf', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answers })
-    });
-
-    if (response.ok) {
-      const blob = await response.blob();
-      const name = answers.name || 'Client';
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `Consent_Form_${name.replace(/\s+/g, '_')}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      return;
-    }
+    const blob = await fetchPdfBlob('/generate-pdf');
+    const name = answers.name || 'Client';
+    saveBlob(blob, `Consent_Form_${name.replace(/\s+/g, '_')}.pdf`);
+    return;
   } catch (err) {
-    // Static hosting may not expose the PDF endpoint; use the browser fallback.
     console.warn('Server PDF export unavailable; using browser export.', err);
   }
 
