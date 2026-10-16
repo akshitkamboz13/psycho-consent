@@ -402,10 +402,18 @@ function buildSlide(index, previousEl, enterClass) {
     const txt = document.createElement('span');
     let qText = s.q;
     if (s.id === 'guardian_name') {
-      const isMinor = parseInt(answers.age, 10) < 18;
+      const ageVal = parseInt(answers.age, 10);
+      const isMinor = !isNaN(ageVal) && ageVal < 18;
       qText = isMinor
         ? "Parent or legal guardian's\nname? (required for under 18)"
         : "Parent or legal guardian's\nname? (if applicable)";
+    }
+    if (s.id === 'guardian_date') {
+      const ageVal = parseInt(answers.age, 10);
+      const isMinor = !isNaN(ageVal) && ageVal < 18;
+      qText = isMinor
+        ? "Parent or guardian's\ndate? (required for under 18)"
+        : "Parent or guardian's\ndate? (if applicable)";
     }
     txt.innerHTML = qText.replace(/\n/g, '<br>');
     label.appendChild(txt);
@@ -434,8 +442,9 @@ function buildSlide(index, previousEl, enterClass) {
       const inp = document.createElement('input');
       inp.type      = s.type === 'number' ? 'number' : 'text';
       inp.className = 'q-input';
+      const ageVal = parseInt(answers.age, 10);
+      const isMinor = !isNaN(ageVal) && ageVal < 18;
       if (s.id === 'guardian_name') {
-        const isMinor = parseInt(answers.age, 10) < 18;
         inp.placeholder = isMinor ? "Parent or guardian's full name" : (s.ph || '');
       } else {
         inp.placeholder = s.ph || '';
@@ -450,7 +459,6 @@ function buildSlide(index, previousEl, enterClass) {
       });
       el.appendChild(inp);
       if (s.optional) {
-        const isMinor = parseInt(answers.age, 10) < 18;
         const canSkip = s.id === 'guardian_name' ? !isMinor : true;
         if (canSkip) {
           const skipBtn = document.createElement('button');
@@ -868,6 +876,16 @@ function nextSlide() {
 }
 
 function skipOptionalGroup(slide) {
+  if (slide.id === 'guardian_name') {
+    const ageVal = parseInt(answers.age, 10);
+    const isMinor = !isNaN(ageVal) && ageVal < 18;
+    if (isMinor) {
+      showError('Parent or guardian name is required for minors (under 18)');
+      const inp = currentEl.querySelector('.q-input');
+      if (inp) { inp.focus(); shake(inp); }
+      return;
+    }
+  }
   const group = slide.group;
   if (!group) return;
   (slide.groupFields || [slide.id]).forEach(id => { answers[id] = null; });
