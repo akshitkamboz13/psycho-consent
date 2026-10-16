@@ -965,8 +965,20 @@ async function fetchPdfBlob(endpoint) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ answers })
       });
-      if (response.ok) return await response.blob();
-      lastErr = new Error(`PDF request to ${ep} failed with status: ${response.status}`);
+      if (!response.ok) {
+        lastErr = new Error(`PDF request to ${ep} failed with status: ${response.status}`);
+        continue;
+      }
+
+      // A hosting rewrite can return index.html with HTTP 200. Do not save or
+      // preview that HTML document as though it were a PDF.
+      const contentType = response.headers.get('content-type') || '';
+      const blob = await response.blob();
+      const signature = await blob.slice(0, 5).text();
+      if (contentType.includes('application/pdf') && signature === '%PDF-') {
+        return blob;
+      }
+      lastErr = new Error(`PDF request to ${ep} returned ${contentType || 'an invalid response'}`);
     } catch (err) {
       lastErr = err;
     }
@@ -998,7 +1010,10 @@ async function downloadBothPDFs() {
     }, 700);
   } catch (err) {
     console.error(err);
-    showError('Could not download both PDFs');
+    // Let each action use its own browser-export fallback if a serverless
+    // endpoint is temporarily unavailable.
+    await generateConsentPDF();
+    await generateSafetyPDF();
   }
 }
 
@@ -1053,9 +1068,31 @@ async function previewBothPDFs() {
     }
     setTimeout(() => URL.revokeObjectURL(url), 120000);
   } catch (err) {
-    if (win) win.close();
     console.error(err);
-    showError('Could not preview combined PDF');
+    // Keep the window created by the click gesture and show the two valid
+    // documents when the optional combined endpoint is unavailable.
+    try {
+      const [consent, safety] = await Promise.all([
+        fetchPdfBlob('/generate-pdf'),
+        fetchPdfBlob('/generate-safety-pdf')
+      ]);
+      if (!win || win.closed) throw new Error('Preview window was closed');
+      const consentUrl = URL.createObjectURL(consent);
+      const safetyUrl = URL.createObjectURL(safety);
+      win.document.open();
+      win.document.write(`<!doctype html><title>Counselling forms preview</title>
+        <style>body{margin:0;background:#f4f4f4;font:16px system-ui;color:#222}h1{margin:0;padding:16px 24px;font-size:18px;background:#fff}main{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px}section{height:calc(100vh - 85px);background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 4px #bbb}h2{font-size:14px;margin:0;padding:12px 16px}iframe{border:0;width:100%;height:calc(100% - 43px)}@media(max-width:800px){main{grid-template-columns:1fr}section{height:80vh}}</style>
+        <h1>Counselling forms</h1><main><section><h2>Consent Form</h2><iframe src="${consentUrl}"></iframe></section><section><h2>Safety Planning Contract</h2><iframe src="${safetyUrl}"></iframe></section></main>`);
+      win.document.close();
+      setTimeout(() => {
+        URL.revokeObjectURL(consentUrl);
+        URL.revokeObjectURL(safetyUrl);
+      }, 120000);
+    } catch (fallbackErr) {
+      if (win) win.close();
+      console.error(fallbackErr);
+      showError('Could not preview the PDFs');
+    }
   }
 }
 
@@ -1188,21 +1225,21 @@ async function generateConsentPDF() {
     jsPDF:       { unit: 'mm', format: 'letter', orientation: 'portrait' }
   };
 
-  setTimeout(async () => {
-    try {
-      if (document.fonts && document.fonts.ready) await document.fonts.ready;
-      await html2pdf().set(opts).from(renderArea).save();
-    } catch (err) {
-      console.error(err);
-      showError('Could not create PDF');
-    } finally {
-      renderArea.style.display = 'none';
-      renderArea.style.position = 'fixed';
-      renderArea.style.top = '-9999px';
-      renderArea.style.left = '-9999px';
-      renderArea.style.zIndex = '-1';
-    }
-  }, 200);
+  // Give the browser one paint so html2canvas sees the temporary render area.
+  await new Promise(resolve => setTimeout(resolve, 200));
+  try {
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+    await html2pdf().set(opts).from(renderArea).save();
+  } catch (err) {
+    console.error(err);
+    showError('Could not create PDF');
+  } finally {
+    renderArea.style.display = 'none';
+    renderArea.style.position = 'fixed';
+    renderArea.style.top = '-9999px';
+    renderArea.style.left = '-9999px';
+    renderArea.style.zIndex = '-1';
+  }
 }
 
 // Backwards-compatible name for existing callers/tests.
@@ -1216,7 +1253,59 @@ async function generateSafetyPDF() {
     const name = (answers.name || 'Client').replace(/\s+/g, '_');
     saveBlob(blob, `Safety_Planning_Contract_${name}.pdf`);
   } catch (err) {
-    console.error(err);
+    console.warn('Server safety-plan PDF export unavailable; using browser export.', err);
+  }
+
+  if (typeof html2pdf !== 'function') {
+    showError('Safety-plan PDF export is unavailable');
+    return;
+  }
+
+  const name = answers.name || '________________';
+  const counsellor = answers.counsellor_name || '________________';
+  const date = answers.client_date || '________________';
+  const clientSignature = answers.sig_client
+    ? `<img src="${answers.sig_client}" style="max-height:50px;max-width:180px;object-fit:contain;vertical-align:middle;">`
+    : '_______________________________';
+  const counsellorSignature = answers.sig_counsellor
+    ? `<img src="${answers.sig_counsellor}" style="max-height:50px;max-width:180px;object-fit:contain;vertical-align:middle;">`
+    : '_______________________________';
+  const renderArea = document.getElementById('pdf-render-area');
+  renderArea.innerHTML = `
+    <div style="font-family:Times New Roman,serif;color:#111;font-size:11pt;line-height:1.4;">
+      <h1 style="text-align:center;font-size:16pt;margin:0 0 24px;">Safety Planning Contract</h1>
+      <p>Client Name: ${name}</p><p>Counsellor Name: ${counsellor}</p><p>Date: ${date}</p>
+      <p>This is an agreement between the client and counsellor to support the client's safety and well-being, and a mutual understanding to take steps to prevent self-harm.</p>
+      <p><strong>My Commitments as a Client — I agree that:</strong></p>
+      <ul><li>I will not harm myself or attempt suicide as long as I am in counselling.</li><li>If I feel overwhelmed with thoughts of harming myself, I will first use the coping strategies we have discussed.</li><li>If these strategies are not enough, I will immediately contact a trusted family member or close friend. If I cannot stay safe, I will call an emergency helpline.</li><li>I will continue attending counselling sessions and remain honest about my feelings.</li></ul>
+      <p><strong>Emergency helplines:</strong></p>
+      <ul><li>Arpita Foundation: 080 23655557 / 080 23656667 (9:00 AM–9:00 PM)</li><li>Cadabam's Mental Health Helpline: +91 96111 94949 (24×7)</li><li>Tele-MANAS: 14416 or 1800 891 4416 (24×7)</li><li>Vandrevala Foundation: +91 9999 666 555 (24×7)</li></ul>
+      <p><strong>My Counsellor's Commitments</strong></p><p>Support you in developing coping strategies and safety plans; provide crisis-helpline information; and respect confidentiality, except where immediate safety requires involving family, guardians, or emergency services.</p>
+      <p style="margin-top:32px;">Client's Signature and Date: ${clientSignature} &nbsp; ${date}</p>
+      <p>Counsellor's Signature and Date: ${counsellorSignature} &nbsp; ${date}</p>
+    </div>`;
+  renderArea.style.display = 'block';
+  renderArea.style.position = 'absolute';
+  renderArea.style.top = '0';
+  renderArea.style.left = '0';
+  renderArea.style.zIndex = '1000';
+  try {
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+    await html2pdf().set({
+      margin: 10,
+      filename: `Safety_Planning_Contract_${name.replace(/\s+/g, '_')}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true, logging: false },
+      jsPDF: { unit: 'mm', format: 'letter', orientation: 'portrait' }
+    }).from(renderArea).save();
+  } catch (fallbackErr) {
+    console.error(fallbackErr);
     showError('Could not create safety planning PDF');
+  } finally {
+    renderArea.style.display = 'none';
+    renderArea.style.position = 'fixed';
+    renderArea.style.top = '-9999px';
+    renderArea.style.left = '-9999px';
+    renderArea.style.zIndex = '-1';
   }
 }
