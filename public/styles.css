@@ -753,3 +753,132 @@ canvas.sig-canvas {
   .opening-i { width: .28em; overflow: visible; }
   .opening-cursor { display: none; }
 }
+
+/* ─── PDF Preview Modal ─── */
+#pdf-preview-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s ease;
+}
+#pdf-preview-modal.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.pdf-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(13, 13, 13, 0.72);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.pdf-modal-container {
+  position: relative;
+  z-index: 1001;
+  width: 92vw;
+  max-width: 960px;
+  height: 90vh;
+  background: #ffffff;
+  border: 2px solid var(--ink);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+  animation: pdfModalPop 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes pdfModalPop {
+  from { transform: scale(0.96) translateY(14px); }
+  to { transform: scale(1) translateY(0); }
+}
+.pdf-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  background: var(--bg);
+  border-bottom: 2px solid var(--ink);
+  flex-shrink: 0;
+}
+.pdf-modal-title {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+}
+.pdf-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.pdf-modal-btn {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--ink);
+  border: 1.5px solid var(--ink);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.pdf-modal-btn:hover {
+  background: var(--ink);
+  color: var(--bg);
+}
+.pdf-modal-close {
+  font-size: 1.2rem;
+  font-weight: 700;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--ink);
+  padding: 4px 8px;
+  line-height: 1;
+  border-radius: 4px;
+  transition: opacity 0.15s;
+}
+.pdf-modal-close:hover {
+  opacity: 0.6;
+}
+#pdf-modal-frame {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #525659;
+}
+@media (max-width: 600px) {
+  .pdf-modal-container {
+    width: 100vw;
+    height: 100vh;
+    max-width: 100%;
+    border-radius: 0;
+    border: none;
+  }
+  .pdf-modal-header {
+    padding: 10px 12px;
+  }
+  .pdf-modal-title {
+    font-size: 0.7rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 140px;
+  }
+  .pdf-modal-btn {
+    padding: 5px 8px;
+    font-size: 0.68rem;
+  }
+}
+

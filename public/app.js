@@ -950,40 +950,235 @@ function shake(el) {
 }
 
 /* ══════════════════════════════════════════
-   WHATSAPP SHARE & PDF HELPERS
+   CLIENT-SIDE PDF GENERATION (pdf-lib)
 ══════════════════════════════════════════ */
-async function fetchPdfBlob(endpoint) {
-  const candidates = [
-    endpoint.startsWith('/api') ? endpoint : `/api${endpoint}`,
-    endpoint
-  ];
-  let lastErr;
-  for (const ep of candidates) {
-    try {
-      const response = await fetch(ep, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answers })
-      });
-      if (!response.ok) {
-        lastErr = new Error(`PDF request to ${ep} failed with status: ${response.status}`);
-        continue;
+function drawWrappedPdfText(page, text, { x, y, size, font, color, maxWidth, lineHeight }) {
+  const paragraphs = text.split('\n');
+  let curY = y;
+  for (const para of paragraphs) {
+    if (!para.trim()) {
+      curY -= lineHeight;
+      continue;
+    }
+    const words = para.split(' ');
+    let line = '';
+    for (const w of words) {
+      const testLine = line ? `${line} ${w}` : w;
+      const testWidth = font.widthOfTextAtSize(testLine, size);
+      if (testWidth > maxWidth && line) {
+        page.drawText(line, { x, y: curY, size, font, color });
+        curY -= lineHeight;
+        line = w;
+      } else {
+        line = testLine;
       }
-
-      // A hosting rewrite can return index.html with HTTP 200. Do not save or
-      // preview that HTML document as though it were a PDF.
-      const contentType = response.headers.get('content-type') || '';
-      const blob = await response.blob();
-      const signature = await blob.slice(0, 5).text();
-      if (contentType.includes('application/pdf') && signature === '%PDF-') {
-        return blob;
-      }
-      lastErr = new Error(`PDF request to ${ep} returned ${contentType || 'an invalid response'}`);
-    } catch (err) {
-      lastErr = err;
+    }
+    if (line) {
+      page.drawText(line, { x, y: curY, size, font, color });
+      curY -= lineHeight;
     }
   }
-  throw lastErr || new Error('PDF request failed');
+  return curY;
+}
+
+async function embedPdfSig(doc, page, dataUrl, x, y, maxW, maxH) {
+  if (!dataUrl || typeof dataUrl !== 'string') return;
+  try {
+    const raw = dataUrl.split(',')[1];
+    if (!raw) return;
+    const bytes = Uint8Array.from(atob(raw), c => c.charCodeAt(0));
+    let img;
+    try {
+      img = await doc.embedPng(bytes);
+    } catch (_e) {
+      img = await doc.embedJpg(bytes);
+    }
+    if (img) {
+      page.drawImage(img, { x, y, width: maxW || 115, height: maxH || 28 });
+    }
+  } catch (e) {
+    console.warn('Signature embed error:', e);
+  }
+}
+
+async function renderPdfConsentPage(doc, a) {
+  const { StandardFonts, rgb } = PDFLib;
+  const page = doc.addPage([612, 792]);
+  const font = await doc.embedFont(StandardFonts.TimesRoman);
+  const fontBold = await doc.embedFont(StandardFonts.TimesRomanBold);
+  const color = rgb(0.07, 0.07, 0.07);
+  const left = 54;
+  const width = 504;
+  const line = (val = '', len = 28) => val || '_'.repeat(len);
+
+  // Title
+  const title = 'Consent Form';
+  const titleW = fontBold.widthOfTextAtSize(title, 15);
+  page.drawText(title, { x: (612 - titleW) / 2, y: 746, size: 15, font: fontBold, color });
+
+  // Details
+  let y = 708;
+  page.drawText(`Name: ${line(a.name, 26)}    Age: ${line(a.age, 9)}`, { x: left, y, size: 11.5, font, color });
+  y -= 27;
+  page.drawText(`Gender: ${line(a.gender, 23)}    Phone: ${line(a.phone, 18)}`, { x: left, y, size: 11.5, font, color });
+  y -= 27;
+  page.drawText(`Address: ${line(a.address, 58)}`, { x: left, y, size: 11.5, font, color });
+  y -= 27;
+  page.drawText(`Emergency Contact: ${line(a.em_name, 17)}    Relationship: ${line(a.em_rel, 17)}`, { x: left, y, size: 11.5, font, color });
+  y -= 27;
+  page.drawText(`Emergency Contact Number: ${line(a.em_phone, 18)}`, { x: left, y, size: 11.5, font, color });
+
+  y -= 26;
+  const body = [
+    'The counselling service is intended to provide psychological support for personal, emotional, interpersonal, educational, and adjustment-related concerns. It is a confidential and collaborative process. You will receive counselling from a trainee counsellor enrolled in the MSc Counselling Psychology programme at Montfort College under the supervision of qualified faculty members.',
+    'Information shared during counselling will remain confidential except:\n• when there is a risk of serious harm to yourself or others;\n• when disclosure is required by law; or\n• for professional supervision and training purposes.',
+    'Your counsellor is a trainee working under close supervision. If your needs are beyond the scope of supervised trainee practice or there are concerns about your immediate safety, you may be referred to a more appropriate mental health professional or service. This is to ensure you receive the safest and most appropriate care.',
+    'Recording (Optional): Sessions may be audio/video recorded for supervision and training purposes only. I understand that I may withdraw this consent at any time.',
+    'I have read and understood the above information. I have had the opportunity to ask questions, understand the limits of confidentiality, and voluntarily consent to receive counselling from a trainee counsellor under supervision.'
+  ];
+
+  for (const p of body) {
+    y = drawWrappedPdfText(page, p, { x: left, y, size: 10, font, color, maxWidth: width, lineHeight: 13.5 });
+    y -= 6;
+  }
+
+  // Signatures
+  y -= 6;
+  const sigY = y;
+  page.drawText('Client Signature: ____________________', { x: left, y: sigY, size: 10.5, font, color });
+  if (a.sig_client) await embedPdfSig(doc, page, a.sig_client, 142, sigY - 6, 100, 24);
+  page.drawText(`Date: ${line(a.client_date, 17)}`, { x: 300, y: sigY, size: 10.5, font, color });
+
+  y -= 28;
+  page.drawText(`Parent/Legal Guardian (if applicable): ${line(a.guardian_name, 20)}    Date: ${line(a.guardian_date, 17)}`, { x: left, y, size: 10.5, font, color });
+
+  y -= 28;
+  const couSigY = y;
+  if (a.counsellor_name || a.sig_counsellor) {
+    page.drawText(`Trainee Counsellor: ${line(a.counsellor_name, 20)}`, { x: left, y: couSigY, size: 10.5, font, color });
+    if (a.sig_counsellor) await embedPdfSig(doc, page, a.sig_counsellor, 155, couSigY - 6, 100, 24);
+    page.drawText(`Date: ${line(a.client_date, 17)}`, { x: 300, y: couSigY, size: 10.5, font, color });
+  } else {
+    page.drawText('Trainee Counsellor: ____________________    Date: __________________', { x: left, y: couSigY, size: 10.5, font, color });
+  }
+
+  y -= 26;
+  page.drawText('In case of emergencies, please contact emergency helplines:', { x: left, y, size: 10.5, font, color });
+  y -= 15;
+  page.drawText('-    Arpita Foundation Suicide Helpline (9am–9pm, all days) — 080 23655557 / 080 23656667', { x: 80, y, size: 9.5, font, color });
+  y -= 13;
+  page.drawText("-    Cadabam's Suicide Prevention Crisis Helpline (24x7) — 97414 76476", { x: 80, y, size: 9.5, font, color });
+}
+
+async function renderPdfSafetyPage(doc, a) {
+  const { StandardFonts, rgb } = PDFLib;
+  const page = doc.addPage([612, 792]);
+  const font = await doc.embedFont(StandardFonts.TimesRoman);
+  const fontBold = await doc.embedFont(StandardFonts.TimesRomanBold);
+  const color = rgb(0.07, 0.07, 0.07);
+  const left = 54;
+  const width = 504;
+  const line = (val = '', len = 38) => val || '_'.repeat(len);
+
+  // Title
+  const title = 'Safety Planning Contract';
+  const titleW = fontBold.widthOfTextAtSize(title, 15);
+  page.drawText(title, { x: (612 - titleW) / 2, y: 746, size: 15, font: fontBold, color });
+
+  let y = 708;
+  page.drawText(`Client Name: ${line(a.name)}`, { x: left, y, size: 10.5, font, color });
+  y -= 24;
+  page.drawText(`Counsellor Name: ${line(a.counsellor_name)}`, { x: left, y, size: 10.5, font, color });
+  y -= 24;
+  page.drawText(`Date: ${line(a.client_date, 34)}`, { x: left, y, size: 10.5, font, color });
+
+  y -= 24;
+  y = drawWrappedPdfText(page, "This is an agreement between the client and counsellor to support the client's safety and well-being, and a mutual understanding to take steps to prevent self-harm.", { x: left, y, size: 10, font, color, maxWidth: width, lineHeight: 13.5 });
+
+  y -= 6;
+  page.drawText('My Commitments as a Client — I agree that:', { x: left, y, size: 10, font: fontBold, color });
+  y -= 15;
+  const clientBullets = [
+    'I will not harm myself or attempt suicide as long as I am in counselling.',
+    'If I feel overwhelmed with thoughts of harming myself, I will first try to use the coping strategies we have discussed.',
+    'If these strategies are not enough, I will immediately contact a trusted family member or close friend. If I feel I cannot stay safe, I will call an emergency helpline (listed below).',
+    'I will continue attending counselling sessions and remain honest about my feelings.',
+    'I will continue talking with as many people as I can for as long as necessary. I have been given this form and understand my counsellor will keep a copy.'
+  ];
+  for (const b of clientBullets) {
+    y = drawWrappedPdfText(page, `-    ${b}`, { x: 74, y, size: 9.5, font, color, maxWidth: width - 20, lineHeight: 13 });
+    y -= 3;
+  }
+
+  y -= 5;
+  page.drawText('Emergency helplines:', { x: left, y, size: 10, font: fontBold, color });
+  y -= 14;
+  const helplines = [
+    'Arpita Foundation (Bengaluru) 080 23655557 / 080 23656667 Available daily, 9:00 AM to 9:00 PM.',
+    "Cadabam's Mental Health Helpline +91 96111 94949 Available 24×7.",
+    'A-MUDRA Yuva Helpline +91 98803 96331 Monday to Saturday, 9:00 AM to 6:00 PM.',
+    'Tele-MANAS (Government of India) 14416 or 1800 891 4416 Available 24×7, free mental health support.',
+    'Vandrevala Foundation +91 9999 666 555 Available 24×7 via phone and WhatsApp.'
+  ];
+  for (const h of helplines) {
+    y = drawWrappedPdfText(page, `-    ${h}`, { x: 74, y, size: 9, font, color, maxWidth: width - 20, lineHeight: 12 });
+    y -= 2;
+  }
+
+  y -= 5;
+  page.drawText("My Counsellor's Commitments — as your counsellor, I agree to:", { x: left, y, size: 10, font: fontBold, color });
+  y -= 14;
+  const couBullets = [
+    'Support you in developing coping strategies and safety plans.',
+    'Be available during agreed working hours, and provide crisis-helpline information for after-hours emergencies.',
+    'Respect your confidentiality, but if I believe your life is in immediate danger, I may need to involve your family/guardian or emergency services to ensure your safety.'
+  ];
+  for (const b of couBullets) {
+    y = drawWrappedPdfText(page, `-    ${b}`, { x: 74, y, size: 9.5, font, color, maxWidth: width - 20, lineHeight: 13 });
+    y -= 3;
+  }
+
+  y -= 10;
+  const cltSigY = y;
+  page.drawText("Client's Signature and Date: _______________________________", { x: left, y: cltSigY, size: 10, font, color });
+  if (a.sig_client) await embedPdfSig(doc, page, a.sig_client, 215, cltSigY - 6, 100, 24);
+
+  y -= 26;
+  const couSigY = y;
+  const couText = a.counsellor_name || a.sig_counsellor ? '_____________________________' : '(section skipped)';
+  page.drawText(`Counsellor's Signature and Date: ${couText}`, { x: left, y: couSigY, size: 10, font, color });
+  if (a.sig_counsellor) await embedPdfSig(doc, page, a.sig_counsellor, 235, couSigY - 6, 100, 24);
+}
+
+async function generateConsentPdfBlob(a = answers) {
+  if (typeof PDFLib !== 'undefined') {
+    const doc = await PDFLib.PDFDocument.create();
+    await renderPdfConsentPage(doc, a);
+    const bytes = await doc.save();
+    return new Blob([bytes], { type: 'application/pdf' });
+  }
+  return fetchPdfBlob('/api/generate-pdf');
+}
+
+async function generateSafetyPdfBlob(a = answers) {
+  if (typeof PDFLib !== 'undefined') {
+    const doc = await PDFLib.PDFDocument.create();
+    await renderPdfSafetyPage(doc, a);
+    const bytes = await doc.save();
+    return new Blob([bytes], { type: 'application/pdf' });
+  }
+  return fetchPdfBlob('/api/generate-safety-pdf');
+}
+
+async function generateBothPdfBlob(a = answers) {
+  if (typeof PDFLib !== 'undefined') {
+    const doc = await PDFLib.PDFDocument.create();
+    await renderPdfConsentPage(doc, a);
+    await renderPdfSafetyPage(doc, a);
+    const bytes = await doc.save();
+    return new Blob([bytes], { type: 'application/pdf' });
+  }
+  return fetchPdfBlob('/api/generate-both-pdf');
 }
 
 function saveBlob(blob, filename) {
@@ -994,26 +1189,132 @@ function saveBlob(blob, filename) {
   document.body.appendChild(link);
   link.click();
   link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+/* ══════════════════════════════════════════
+   USER ACTIONS (100% Client-Side)
+══════════════════════════════════════════ */
+async function generateConsentPDF() {
+  try {
+    const blob = await generateConsentPdfBlob();
+    const name = (answers.name || 'Client').replace(/\s+/g, '_');
+    saveBlob(blob, `Consent_Form_${name}.pdf`);
+  } catch (err) {
+    console.error(err);
+    showError('Could not generate Consent PDF');
+  }
+}
+
+async function generateSafetyPDF() {
+  try {
+    const blob = await generateSafetyPdfBlob();
+    const name = (answers.name || 'Client').replace(/\s+/g, '_');
+    saveBlob(blob, `Safety_Planning_Contract_${name}.pdf`);
+  } catch (err) {
+    console.error(err);
+    showError('Could not generate Safety Planning PDF');
+  }
 }
 
 async function downloadBothPDFs() {
   try {
     const [consent, safety] = await Promise.all([
-      fetchPdfBlob('/generate-pdf'),
-      fetchPdfBlob('/generate-safety-pdf')
+      generateConsentPdfBlob(),
+      generateSafetyPdfBlob()
     ]);
     const name = (answers.name || 'Client').replace(/\s+/g, '_');
     saveBlob(consent, `Consent_Form_${name}.pdf`);
     setTimeout(() => {
       saveBlob(safety, `Safety_Planning_Contract_${name}.pdf`);
-    }, 700);
+    }, 500);
   } catch (err) {
     console.error(err);
-    // Let each action use its own browser-export fallback if a serverless
-    // endpoint is temporarily unavailable.
-    await generateConsentPDF();
-    await generateSafetyPDF();
+    showError('Could not download both PDFs');
+  }
+}
+
+let previewModalEl = null;
+let currentPreviewBlobUrl = null;
+
+function closePdfPreviewModal() {
+  if (previewModalEl) {
+    previewModalEl.classList.remove('open');
+    setTimeout(() => {
+      if (previewModalEl) {
+        previewModalEl.remove();
+        previewModalEl = null;
+      }
+      if (currentPreviewBlobUrl) {
+        URL.revokeObjectURL(currentPreviewBlobUrl);
+        currentPreviewBlobUrl = null;
+      }
+    }, 220);
+  }
+}
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && previewModalEl && previewModalEl.classList.contains('open')) {
+    closePdfPreviewModal();
+  }
+});
+
+async function previewBothPDFs() {
+  try {
+    const blob = await generateBothPdfBlob();
+    if (currentPreviewBlobUrl) {
+      URL.revokeObjectURL(currentPreviewBlobUrl);
+    }
+    const url = URL.createObjectURL(blob);
+    currentPreviewBlobUrl = url;
+
+    if (!previewModalEl) {
+      previewModalEl = document.createElement('div');
+      previewModalEl.id = 'pdf-preview-modal';
+      previewModalEl.innerHTML = `
+        <div class="pdf-modal-backdrop"></div>
+        <div class="pdf-modal-container">
+          <div class="pdf-modal-header">
+            <span class="pdf-modal-title">Combined PDF Preview</span>
+            <div class="pdf-modal-actions">
+              <button type="button" class="pdf-modal-btn" id="pdf-modal-download-btn">Download</button>
+              <button type="button" class="pdf-modal-btn" id="pdf-modal-tab-btn">Open in Tab</button>
+              <button type="button" class="pdf-modal-close" id="pdf-modal-close-btn" aria-label="Close">✕</button>
+            </div>
+          </div>
+          <iframe id="pdf-modal-frame" src="${url}" title="Combined PDF Preview"></iframe>
+        </div>
+      `;
+      document.body.appendChild(previewModalEl);
+
+      previewModalEl.querySelector('.pdf-modal-backdrop').addEventListener('click', closePdfPreviewModal);
+      previewModalEl.querySelector('#pdf-modal-close-btn').addEventListener('click', closePdfPreviewModal);
+      previewModalEl.querySelector('#pdf-modal-download-btn').addEventListener('click', () => {
+        const name = (answers.name || 'Client').replace(/\s+/g, '_');
+        saveBlob(blob, `Combined_Counselling_Forms_${name}.pdf`);
+      });
+      previewModalEl.querySelector('#pdf-modal-tab-btn').addEventListener('click', () => {
+        const win = window.open(url, '_blank');
+        if (!win || win.closed) {
+          const link = document.createElement('a');
+          link.href = url;
+          link.target = '_blank';
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+        }
+      });
+    } else {
+      const frame = previewModalEl.querySelector('#pdf-modal-frame');
+      if (frame) frame.src = url;
+    }
+
+    requestAnimationFrame(() => {
+      previewModalEl.classList.add('open');
+    });
+  } catch (err) {
+    console.error(err);
+    showError('Could not preview combined PDF');
   }
 }
 
@@ -1021,8 +1322,8 @@ async function shareBothPDFs() {
   const name = answers['name'] || 'Client';
   try {
     const [consent, safety] = await Promise.all([
-      fetchPdfBlob('/generate-pdf'),
-      fetchPdfBlob('/generate-safety-pdf')
+      generateConsentPdfBlob(),
+      generateSafetyPdfBlob()
     ]);
     const safeName = (name || 'Client').replace(/\s+/g, '_');
     const files = [
@@ -1046,266 +1347,29 @@ async function shareBothPDFs() {
   await downloadBothPDFs();
 }
 
-async function previewBothPDFs() {
-  const win = window.open('about:blank', '_blank');
-  if (win) {
-    try {
-      win.document.write('<p style="font-family:sans-serif;padding:32px;color:#555;">Preparing PDF preview...</p>');
-    } catch (e) {}
-  }
-  try {
-    const blob = await fetchPdfBlob('/generate-both-pdf');
-    const url = URL.createObjectURL(blob);
-    if (win && !win.closed) {
-      win.location.href = url;
-    } else {
-      const link = document.createElement('a');
-      link.href = url;
-      link.target = '_blank';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-    }
-    setTimeout(() => URL.revokeObjectURL(url), 120000);
-  } catch (err) {
-    console.error(err);
-    // Keep the window created by the click gesture and show the two valid
-    // documents when the optional combined endpoint is unavailable.
-    try {
-      const [consent, safety] = await Promise.all([
-        fetchPdfBlob('/generate-pdf'),
-        fetchPdfBlob('/generate-safety-pdf')
-      ]);
-      if (!win || win.closed) throw new Error('Preview window was closed');
-      const consentUrl = URL.createObjectURL(consent);
-      const safetyUrl = URL.createObjectURL(safety);
-      win.document.open();
-      win.document.write(`<!doctype html><title>Counselling forms preview</title>
-        <style>body{margin:0;background:#f4f4f4;font:16px system-ui;color:#222}h1{margin:0;padding:16px 24px;font-size:18px;background:#fff}main{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px}section{height:calc(100vh - 85px);background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 4px #bbb}h2{font-size:14px;margin:0;padding:12px 16px}iframe{border:0;width:100%;height:calc(100% - 43px)}@media(max-width:800px){main{grid-template-columns:1fr}section{height:80vh}}</style>
-        <h1>Counselling forms</h1><main><section><h2>Consent Form</h2><iframe src="${consentUrl}"></iframe></section><section><h2>Safety Planning Contract</h2><iframe src="${safetyUrl}"></iframe></section></main>`);
-      win.document.close();
-      setTimeout(() => {
-        URL.revokeObjectURL(consentUrl);
-        URL.revokeObjectURL(safetyUrl);
-      }, 120000);
-    } catch (fallbackErr) {
-      if (win) win.close();
-      console.error(fallbackErr);
-      showError('Could not preview the PDFs');
-    }
-  }
-}
-
-/* ══════════════════════════════════════════
-   PDF GENERATION
-══════════════════════════════════════════ */
-async function generateConsentPDF() {
-  try {
-    const blob = await fetchPdfBlob('/generate-pdf');
-    const name = answers.name || 'Client';
-    saveBlob(blob, `Consent_Form_${name.replace(/\s+/g, '_')}.pdf`);
-    return;
-  } catch (err) {
-    console.warn('Server PDF export unavailable; using browser export.', err);
-  }
-
-  if (typeof html2pdf !== 'function') {
-    showError('PDF export is unavailable');
-    return;
-  }
-
-  const name           = answers['name']           || '________________';
-  const age            = answers['age']            || '____';
-  const gender         = answers['gender']         || '________________';
-  const phone          = answers['phone']          || '________________';
-  const address        = answers['address']        || '________________';
-  const emName         = answers['em_name']        || '________________';
-  const emRel          = answers['em_rel']         || '________________';
-  const emPhone        = answers['em_phone']       || '________________';
-  const clientDate     = answers['client_date']    || '________________';
-  const couName        = answers['counsellor_name']|| '________________';
-  const sigClient      = answers['sig_client']     || null;
-  const sigCounsellor  = answers['sig_counsellor'] || null;
-
-  const sigClientHtml = sigClient
-    ? `<img src="${sigClient}" style="max-height:55px;max-width:200px;display:block;margin-bottom:6px;object-fit:contain;">`
-    : '<div style="height:35px;color:#aaa;font-style:italic;font-size:10px;">[No Signature]</div>';
-
-  const sigCouHtml = sigCounsellor
-    ? `<img src="${sigCounsellor}" style="max-height:55px;max-width:200px;display:block;margin-bottom:6px;object-fit:contain;">`
-    : '<div style="height:35px;color:#aaa;font-style:italic;font-size:10px;">[No Signature]</div>';
-
-  const meta = {
-    ts: new Date().toLocaleString(),
-    tz: Intl.DateTimeFormat().resolvedOptions().timeZone
-  };
-
-  const html = `
-    <div style="text-align:center;border-bottom:2px solid #000;padding-bottom:12px;margin-bottom:20px;">
-      <h1 style="font-size:18px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Counselling Informed Consent Form</h1>
-      <p style="font-size:11px;color:#555;">MSc Counselling Psychology — Montfort College</p>
-    </div>
-
-    <table style="width:100%;border-collapse:collapse;margin-bottom:16px;font-size:12px;">
-      <tr>
-        <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;font-weight:700;width:28%;color:#111;">Client Name</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;">${name}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;font-weight:700;width:20%;">Age / Gender</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;">${age} / ${gender}</td>
-      </tr>
-      <tr>
-        <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;font-weight:700;">Phone</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;">${phone}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;font-weight:700;">Address</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;">${address}</td>
-      </tr>
-      <tr>
-        <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;font-weight:700;">Emergency Contact</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;">${emName} (${emRel})</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;font-weight:700;">Emergency Phone</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #e0e0e0;">${emPhone}</td>
-      </tr>
-    </table>
-
-    <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;margin:16px 0 6px;background:#f5f5f5;padding:4px 8px;border-left:4px solid #000;">
-      Counselling &amp; Confidentiality Terms
-    </div>
-    <div style="font-size:11px;line-height:1.6;color:#222;margin-bottom:10px;text-align:justify;">
-      Counselling provides psychological support for personal, emotional, interpersonal, educational, and adjustment-related concerns.
-      You will work with a trainee counsellor under qualified faculty supervision at Montfort College.
-    </div>
-    <div style="font-size:11px;line-height:1.6;color:#222;margin-bottom:10px;text-align:justify;">
-      <strong>Confidentiality exceptions:</strong> Risk of harm to self or others · Disclosure required by law · Supervision purposes.
-    </div>
-    <div style="font-size:11px;line-height:1.6;color:#222;margin-bottom:10px;">
-      <strong>Recording:</strong> Sessions may be recorded for supervision only. Consent may be withdrawn at any time.
-    </div>
-
-    <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;margin:16px 0 6px;background:#f5f5f5;padding:4px 8px;border-left:4px solid #000;">
-      Emergency Helplines
-    </div>
-    <div style="font-size:10px;line-height:1.7;color:#222;">
-      • Arpita Foundation: 080 23655557 / 080 23656667 (9am–9pm)<br>
-      • Cadabam's Crisis Helpline: 97414 76476 (24×7)
-    </div>
-
-    <div style="margin-top:28px;display:flex;justify-content:space-between;gap:20px;">
-      <div style="flex:1;border-top:1px solid #000;padding-top:8px;font-size:11px;">
-        ${sigClientHtml}
-        <strong>Client Signature</strong><br>Date: ${clientDate}
-      </div>
-      <div style="flex:1;border-top:1px solid #000;padding-top:8px;font-size:11px;">
-        ${sigCouHtml}
-        <strong>Trainee Counsellor:</strong> ${couName}<br>Date: ${clientDate}
-      </div>
-    </div>
-
-    <div style="margin-top:24px;padding:8px 12px;background:#f8f8f8;border:1px solid #e0e0e0;border-radius:4px;font-size:9px;color:#666;display:grid;grid-template-columns:1fr 1fr;gap:4px;">
-      <div><strong>Submitted:</strong> ${meta.ts}</div>
-      <div><strong>Timezone:</strong> ${meta.tz}</div>
-    </div>
-  `;
-
-  const renderArea = document.getElementById('pdf-render-area');
-  renderArea.innerHTML = html;
-  renderArea.style.display = 'block';
-  // html2canvas cannot reliably paint display:none, negative z-index, or
-  // off-screen fixed elements. Keep the target in the document viewport while
-  // it is being captured, then move it back out of the way afterwards.
-  renderArea.style.position = 'absolute';
-  renderArea.style.top = '0';
-  renderArea.style.left = '0';
-  renderArea.style.zIndex = '1000';
-
-  const opts = {
-    margin:      10,
-    filename:    `Consent_Form_${name.replace(/\s+/g,'_')}.pdf`,
-    image:       { type: 'jpeg', quality: 0.98 },
-    html2canvas: { scale: 2, useCORS: true, logging: false },
-    jsPDF:       { unit: 'mm', format: 'letter', orientation: 'portrait' }
-  };
-
-  // Give the browser one paint so html2canvas sees the temporary render area.
-  await new Promise(resolve => setTimeout(resolve, 200));
-  try {
-    if (document.fonts && document.fonts.ready) await document.fonts.ready;
-    await html2pdf().set(opts).from(renderArea).save();
-  } catch (err) {
-    console.error(err);
-    showError('Could not create PDF');
-  } finally {
-    renderArea.style.display = 'none';
-    renderArea.style.position = 'fixed';
-    renderArea.style.top = '-9999px';
-    renderArea.style.left = '-9999px';
-    renderArea.style.zIndex = '-1';
-  }
-}
-
 // Backwards-compatible name for existing callers/tests.
 function generatePDF() {
   return generateConsentPDF();
 }
 
-async function generateSafetyPDF() {
-  try {
-    const blob = await fetchPdfBlob('/generate-safety-pdf');
-    const name = (answers.name || 'Client').replace(/\s+/g, '_');
-    saveBlob(blob, `Safety_Planning_Contract_${name}.pdf`);
-  } catch (err) {
-    console.warn('Server safety-plan PDF export unavailable; using browser export.', err);
+async function fetchPdfBlob(endpoint) {
+  const candidates = [
+    endpoint.startsWith('/api') ? endpoint : `/api${endpoint}`,
+    endpoint
+  ];
+  let lastErr;
+  for (const ep of candidates) {
+    try {
+      const response = await fetch(ep, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answers })
+      });
+      if (response.ok) return await response.blob();
+      lastErr = new Error(`PDF request to ${ep} failed with status: ${response.status}`);
+    } catch (err) {
+      lastErr = err;
+    }
   }
-
-  if (typeof html2pdf !== 'function') {
-    showError('Safety-plan PDF export is unavailable');
-    return;
-  }
-
-  const name = answers.name || '________________';
-  const counsellor = answers.counsellor_name || '________________';
-  const date = answers.client_date || '________________';
-  const clientSignature = answers.sig_client
-    ? `<img src="${answers.sig_client}" style="max-height:50px;max-width:180px;object-fit:contain;vertical-align:middle;">`
-    : '_______________________________';
-  const counsellorSignature = answers.sig_counsellor
-    ? `<img src="${answers.sig_counsellor}" style="max-height:50px;max-width:180px;object-fit:contain;vertical-align:middle;">`
-    : '_______________________________';
-  const renderArea = document.getElementById('pdf-render-area');
-  renderArea.innerHTML = `
-    <div style="font-family:Times New Roman,serif;color:#111;font-size:11pt;line-height:1.4;">
-      <h1 style="text-align:center;font-size:16pt;margin:0 0 24px;">Safety Planning Contract</h1>
-      <p>Client Name: ${name}</p><p>Counsellor Name: ${counsellor}</p><p>Date: ${date}</p>
-      <p>This is an agreement between the client and counsellor to support the client's safety and well-being, and a mutual understanding to take steps to prevent self-harm.</p>
-      <p><strong>My Commitments as a Client — I agree that:</strong></p>
-      <ul><li>I will not harm myself or attempt suicide as long as I am in counselling.</li><li>If I feel overwhelmed with thoughts of harming myself, I will first use the coping strategies we have discussed.</li><li>If these strategies are not enough, I will immediately contact a trusted family member or close friend. If I cannot stay safe, I will call an emergency helpline.</li><li>I will continue attending counselling sessions and remain honest about my feelings.</li></ul>
-      <p><strong>Emergency helplines:</strong></p>
-      <ul><li>Arpita Foundation: 080 23655557 / 080 23656667 (9:00 AM–9:00 PM)</li><li>Cadabam's Mental Health Helpline: +91 96111 94949 (24×7)</li><li>Tele-MANAS: 14416 or 1800 891 4416 (24×7)</li><li>Vandrevala Foundation: +91 9999 666 555 (24×7)</li></ul>
-      <p><strong>My Counsellor's Commitments</strong></p><p>Support you in developing coping strategies and safety plans; provide crisis-helpline information; and respect confidentiality, except where immediate safety requires involving family, guardians, or emergency services.</p>
-      <p style="margin-top:32px;">Client's Signature and Date: ${clientSignature} &nbsp; ${date}</p>
-      <p>Counsellor's Signature and Date: ${counsellorSignature} &nbsp; ${date}</p>
-    </div>`;
-  renderArea.style.display = 'block';
-  renderArea.style.position = 'absolute';
-  renderArea.style.top = '0';
-  renderArea.style.left = '0';
-  renderArea.style.zIndex = '1000';
-  try {
-    if (document.fonts && document.fonts.ready) await document.fonts.ready;
-    await html2pdf().set({
-      margin: 10,
-      filename: `Safety_Planning_Contract_${name.replace(/\s+/g, '_')}.pdf`,
-      image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2, useCORS: true, logging: false },
-      jsPDF: { unit: 'mm', format: 'letter', orientation: 'portrait' }
-    }).from(renderArea).save();
-  } catch (fallbackErr) {
-    console.error(fallbackErr);
-    showError('Could not create safety planning PDF');
-  } finally {
-    renderArea.style.display = 'none';
-    renderArea.style.position = 'fixed';
-    renderArea.style.top = '-9999px';
-    renderArea.style.left = '-9999px';
-    renderArea.style.zIndex = '-1';
-  }
+  throw lastErr || new Error('PDF request failed');
 }
